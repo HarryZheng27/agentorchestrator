@@ -1,0 +1,7 @@
+pyyaml>=6.0
+
+[dev]
+pytest>=7.0
+
+[tui]
+textual>=0.80

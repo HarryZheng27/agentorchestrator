@@ -1,0 +1,286 @@
+# AI Agent Orchestrator
+
+A modular, extensible AI Agent Orchestrator designed to build multi-agent systems, execute and coordinate agents using the **Codex CLI**, modify existing projects, and facilitate inter-agent task delegation.
+
+---
+
+## Key Features
+
+- **CLI Engine Integration**:
+  - **Codex CLI** (`codex`): Powers all agents — optimized for source code generation, refactoring, file patching, architecture planning, code review, and verification.
+  - **Mock / Simulator Engine**: Enables deterministic unit testing and offline development workflows without live tokens.
+  - The orchestrator runs Codex with `--sandbox workspace-write` by default so agents can modify files in the selected workspace. Set an agent's `extra_args` to include `--sandbox read-only` to override this.
+- **Task Delegation**:
+  - Agents can delegate sub-tasks to specialized peers or worker agents.
+  - Agents can create and run additional workers during a workflow with `TOOL_CALL: create_agent({...})`; workers inherit the creator's engine and tool permissions, while the delegating agent can select each worker's model and reasoning effort.
+  - Creation can be disabled per agent with `can_create_agents: false` in its YAML/JSON config.
+  - Multiple delegation formats supported:
+    - XML tags: `<delegate target="coder" model="gpt-6-sol" reasoning_effort="high">Implement feature</delegate>`
+    - Self-closing tags: `<delegate agent="reviewer" prompt="Review diff" />`
+    - Tool calls: `TOOL_CALL: delegate_task({"target_agent": "tester", "task": "Run tests", "model": "gpt-6-luna", "reasoning_effort": "high"})`
+    - JSON blocks: `{"action": "delegate", "target": "worker", "task": "..."}`
+  - Automatic recursion guard and cycle prevention (`max_delegation_depth`, call stack tracking).
+- **Existing Project Modification**:
+  - Pass `--project-dir <path>` or run directly on existing repositories.
+  - File tools reject paths that resolve outside the target codebase, including symlink targets.
+  - Integrated codebase tools:
+    - `read_file(path, start_line, end_line)`
+    - `write_file(path, content)`
+    - `patch_file(path, target_snippet, replacement_snippet)`
+    - `list_files(directory, pattern)`
+    - `search_code(query, pattern)`
+    - `run_command(command)` (execute tests, linters, and builds after explicit workspace opt-in).
+- **GitHub Repository Recognition**:
+  - Accepts GitHub URLs (`https://github.com/owner/repo`, `git@github.com:...`) and slugs (`owner/repo`).
+  - Automatically clones remote repositories into a workspace cache if needed.
+  - Git inspection & operations: `git_status`, `git_diff`, `git_create_branch`, `git_checkout`.
+- **Flexible Workflows**:
+  - Declare agent teams in **YAML** or **JSON** project manifests.
+  - Embed directly in Python code via the programmatic SDK.
+- **Interactive Sessions**:
+  - In an interactive terminal, `agent-orchestrator run --prompt "..."` stays open for follow-up requests.
+  - Each configured or dynamically created agent retains its own conversation history for the lifetime of that process. Type `/exit`, press Ctrl+D on Linux/macOS, or press Ctrl+Z then Enter on Windows to end the session and clear its in-memory context. Non-interactive use still runs once and exits.
+
+---
+
+## Installation
+
+From the repository directory, install the package in editable mode:
+
+```bash
+python -m pip install -e .
+```
+
+### Ubuntu 22.04
+
+Install Python, virtual environment support, and Git. From the repository directory:
+
+```bash
+sudo apt update
+sudo apt install -y python3 python3-venv python3-pip git curl
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .
+```
+
+Install the [Codex CLI](https://github.com/openai/codex#installing-and-running-codex-cli) using its Linux installer, then sign in in the same user account that will run the orchestrator:
+
+```bash
+curl -fsSL https://chatgpt.com/codex/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
+codex --version
+codex login
+agent-orchestrator inspect --project-dir .
+```
+
+The installer uses `~/.local/bin` by default; the `PATH` line makes `codex` available in the current terminal. The orchestrator also searches common npm global locations when `codex` is absent from `PATH`. To use npm instead, install a current Node.js release with npm and run `npm install -g @openai/codex`.
+
+Run the installed command from any directory, or run the repository launcher from the repository directory:
+
+```bash
+agent-orchestrator run --project-dir /path/to/project --prompt "Describe this project"
+./agent-orchestrator.sh run --project-dir /path/to/project --prompt "Describe this project"
+```
+
+The launcher runs with `python3`, so activate the virtual environment first. If the script is not executable after copying the repository, run `chmod +x agent-orchestrator.sh` once or invoke it with `bash agent-orchestrator.sh`.
+
+For the optional terminal monitor, install the TUI extra:
+
+```bash
+pip install -e '.[tui]'
+```
+
+On Ubuntu, the TUI needs an interactive terminal. The graphical monitor needs a desktop session and Tkinter (`sudo apt install python3-tk`); it cannot open in a headless SSH session without a display server.
+
+To run unit and integration tests:
+```bash
+python -m pytest tests -v
+```
+
+---
+
+## CLI Usage
+
+### Terminal Workflow Monitor
+
+Launch the terminal interface, enter your task in the prompt box at the top, and press **Run workflow** (or **Ctrl+R**). The left pane shows agents under the agent that delegated to them; the right panes show a filterable live activity log and the final response. The form accepts a config file, local project directory, repository URL or slug, and starting agent. All options can also be prefilled from the command line:
+
+```bash
+agent-orchestrator tui
+agent-orchestrator tui --config orchestrator.yaml --project-dir ./my-project --prompt "Fix the failing tests" --agent architect
+```
+
+Use the activity filter to narrow the log and **Ctrl+Q** to leave the interface. A blank config field uses the built-in team. Each press of **Run workflow** starts a new session.
+
+### Graphical Workflow Monitor
+Open the Tkinter interface to choose a configuration and project directory, enter a task, and watch agent tasks and delegations update live:
+
+```bash
+agent-orchestrator gui
+# Prefill the form with a config, project, and task:
+agent-orchestrator gui --config orchestrator.yaml --project-dir ./my-project --prompt "Fix the failing tests"
+```
+
+The activity panel reports only file basenames for `read_file`, `list_files`, and `search_code`; it does not display file contents or search snippets.
+
+### 1. Inspect a Workspace or GitHub Repository
+Inspect workspace files, git branch, commit status, and verify Codex CLI discovery:
+
+```bash
+agent-orchestrator inspect --project-dir ./my-project
+# Or inspect a GitHub repo:
+agent-orchestrator inspect --repo owner/repository
+```
+
+### 2. Modify an Existing Project
+Point the multi-agent team at an existing project codebase:
+
+```bash
+agent-orchestrator modify \
+  --project-dir C:/path/to/existing-app \
+  --prompt "Upgrade database schema and fix broken authentication tests"
+```
+
+### 3. Run a Custom Multi-Agent Team (YAML Config)
+Execute a pipeline defined in a YAML configuration file:
+
+```bash
+agent-orchestrator run \
+  --config examples/multi_cli_dev_team.yaml \
+  --prompt "Implement a REST API client with retry logic"
+```
+
+### 4. Initialize a New Configuration
+Generate a starter `orchestrator.yaml` in your project:
+
+```bash
+agent-orchestrator init --output my_team.yaml
+```
+
+---
+
+## YAML Project Configuration Example
+
+Below is a configuration coordinating multiple **Codex**-powered agents:
+
+```yaml
+name: "Dev Team"
+description: "Architect delegates to Coder, verified by Reviewer — all powered by Codex CLI."
+
+workspace:
+  project_dir: "."
+  auto_clone: true
+  allow_shell_commands: true  # Only for a trusted workspace and trusted agents
+
+initial_agent: "architect"
+max_delegation_depth: 4
+max_turns_per_agent: 6
+
+agents:
+  - name: "architect"
+    role: "System Architect"
+    engine: "codex"
+    system_prompt: |
+      You are the Lead Software Architect.
+      Analyze project structure and delegate implementation:
+        <delegate target="coder" model="gpt-6-sol" reasoning_effort="high">Write implementation</delegate>
+      Once coding completes, delegate verification:
+        <delegate target="reviewer" model="gpt-6-luna" reasoning_effort="high">Review code and run pytest</delegate>
+    can_delegate_to: ["coder", "reviewer"]
+    can_create_agents: true
+    allowed_tools: ["read_file", "list_files", "search_code"]
+
+  - name: "coder"
+    role: "Code Implementer"
+    engine: "codex"
+    system_prompt: |
+      Implement code requested by the architect using 'read_file', 'write_file', and 'patch_file'.
+    can_delegate_to: []
+    allowed_tools: ["read_file", "write_file", "patch_file", "list_files"]
+
+  - name: "reviewer"
+    role: "Code Reviewer & Tester"
+    engine: "codex"
+    system_prompt: |
+      Inspect 'git_diff' and execute tests via 'run_command'.
+    can_delegate_to: []
+    allowed_tools: ["read_file", "run_command", "git_diff", "git_status"]
+```
+
+`run_command` is disabled by default. To use it, set `workspace.allow_shell_commands: true` in YAML/JSON or pass `allow_shell_commands=True` to `WorkspaceManager`. The setting enables an unrestricted host shell; the workspace path is only its working directory and does not confine access. Agent `allowed_tools` controls orchestrator tool calls, but the Codex CLI engine may run its own commands under its configured sandbox policy.
+
+---
+
+## Programmatic Python SDK
+
+You can import and use the orchestrator directly in other Python applications:
+
+```python
+import asyncio
+from agent_orchestrator import Orchestrator, Agent, get_engine, WorkspaceManager
+
+async def main():
+    # 1. Target existing project or GitHub repository
+    workspace = WorkspaceManager(project_dir="./my_existing_repo")
+
+    # 2. Setup Orchestrator
+    orchestrator = Orchestrator(workspace=workspace)
+
+    # 3. Register agents — all powered by Codex CLI
+    architect = Agent(
+        name="architect",
+        role="Lead Architect",
+        engine=get_engine("codex"),
+        system_prompt="Analyze code and delegate to coder: <delegate target='coder'>...</delegate>",
+        can_delegate_to=["coder"],
+    )
+
+    coder = Agent(
+        name="coder",
+        role="Developer",
+        engine=get_engine("codex"),
+        system_prompt="Implement modifications using patch_file.",
+        can_delegate_to=[],
+    )
+
+    orchestrator.register_agent(architect)
+    orchestrator.register_agent(coder)
+
+    # 4. Run multi-agent pipeline
+    result = await orchestrator.run(
+        prompt="Refactor user model to support OAuth2 tokens",
+        initial_agent="architect",
+    )
+    print(result)
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+---
+
+## Architecture Overview
+
+```
+                        ┌─────────────────────────────────┐
+                        │       agent-orchestrator        │
+                        │       CLI / Python SDK          │
+                        └────────────────┬────────────────┘
+                                         │
+                        ┌────────────────▼────────────────┐
+                        │          Orchestrator           │
+                        │  (Event Bus, Shared Blackboard) │
+                        └───────┬─────────────────┬───────┘
+                                │                 │
+               ┌────────────────▼───┐         ┌───▼────────────────┐
+               │ DelegationManager  │         │   WorkspaceManager │
+               │ • Loop Prevention  │         │ • Safe Sandboxing  │
+               │ • Context Passing  │         │ • GitManager       │
+               │ • Call Stack Guard │         │ • Code Modification│
+               └────────┬───────────┘         └───┬────────────────┘
+                        │                         │
+                ┌───────▼─────────────────────────▼──┐
+                │          CodexCLIEngine             │
+                │          (`codex`)                  │
+                └────────────────────────────────────┘
+```

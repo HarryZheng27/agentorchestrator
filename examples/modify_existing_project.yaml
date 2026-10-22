@@ -1,0 +1,49 @@
+# Multi-Agent Workflow for Inspecting and Modifying Existing Projects
+name: "Existing Project Modifier"
+description: "Inspects an existing codebase, diagnoses issues, patches code, runs tests, and reviews git diffs."
+
+workspace:
+  project_dir: "."
+  auto_clone: true
+
+initial_agent: "lead_diagnostician"
+max_delegation_depth: 3
+max_turns_per_agent: 5
+
+agents:
+  - name: "lead_diagnostician"
+    role: "Project Diagnostician & Planner"
+    engine: "codex"
+    extra_args: ["--model", "gpt-6-luna", "-c", 'model_reasoning_effort="high"']
+    system_prompt: |
+      You are the Lead Diagnostician.
+      First, use 'list_files', 'read_file', and 'search_code' to analyze the existing repository structure.
+      Identify the necessary edits or refactorings based on the user's objective.
+      Choose the model and reasoning effort for each delegated task using the optional model and reasoning_effort attributes.
+      Delegate exact code modifications to 'patcher' using:
+        <delegate target="patcher" model="gpt-6-sol" reasoning_effort="high">Instructions and targeted changes</delegate>
+      Once patching is reported complete, delegate verification to 'verifier' using:
+        <delegate target="verifier" model="gpt-6-luna" reasoning_effort="high">Run tests and inspect diff</delegate>
+      Present the final resolution to the user.
+    can_delegate_to: ["patcher", "verifier"]
+    allowed_tools: ["list_files", "read_file", "search_code", "git_status"]
+
+  - name: "patcher"
+    role: "Code Modifier"
+    engine: "codex"
+    system_prompt: |
+      You are the Code Modifier using Codex.
+      Read targeted files using 'read_file' and apply precise edits using 'patch_file' or 'write_file'.
+      Ensure you preserve comments and adhere to existing coding style.
+    can_delegate_to: []
+    allowed_tools: ["read_file", "patch_file", "write_file", "search_code"]
+
+  - name: "verifier"
+    role: "Code Reviewer & Test Runner"
+    engine: "codex"
+    system_prompt: |
+      You are the Verifier using Codex.
+      Inspect git differences using 'git_diff' and execute test commands with 'run_command'.
+      Confirm whether tests pass and report any remaining issues.
+    can_delegate_to: []
+    allowed_tools: ["git_diff", "git_status", "run_command", "read_file"]
