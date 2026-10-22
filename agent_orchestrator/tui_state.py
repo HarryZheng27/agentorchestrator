@@ -15,6 +15,7 @@ class AgentStatus:
     parent: Optional[str] = None
     status: str = "Ready"
     task: str = ""
+    activity: str = ""
 
 
 class WorkflowState:
@@ -60,6 +61,9 @@ class WorkflowState:
             self.status = "Running"
             agent = self.agent(str(data["initial_agent"]))
             agent.parent = None
+            agent.task = self._brief(data.get("prompt")) or agent.task
+            agent.status = "Working"
+            agent.activity = "Starting task"
             line = f"Started in {data.get('workspace', '.')} with {agent.name}"
         elif event == "agent_turn_start":
             agent = self.agent(str(data["agent"]))
@@ -68,12 +72,13 @@ class WorkflowState:
                 agent.parent = str(stack[-2])
             agent.role = str(data.get("role") or agent.role)
             agent.status = "Working"
-            if not agent.task:
-                agent.task = self._brief(data.get("prompt"))
+            agent.task = self._brief(data.get("prompt")) or agent.task
+            agent.activity = "Working on assigned task"
             line = f"{agent.name} started: {agent.task}"
         elif event == "agent_process_started":
             agent = self.agent(str(data.get("agent", "Agent")))
             agent.status = "Running Codex"
+            agent.activity = "Codex is running"
             details = []
             if data.get("model"):
                 details.append(f"model {data['model']}")
@@ -86,23 +91,31 @@ class WorkflowState:
         elif event == "agent_progress":
             agent = self.agent(str(data.get("agent", "Agent")))
             agent.status = "Working"
+            progress = self._brief(data.get("text"), 100)
+            if progress.startswith("Codex started "):
+                progress = f"Codex started {self._command_summary(progress[len('Codex started '):])}"
+            agent.activity = progress or "Working"
             line = f"{agent.name}: {self._brief(data.get('text'), 240)}"
         elif event == "agent_protocol_error":
             agent = self.agent(str(data.get("agent", "Agent")))
             agent.status = "Failed"
+            agent.activity = "Codex reported an error"
             line = f"{agent.name} Codex error: {self._brief(data.get('text'), 240)}"
         elif event == "agent_process_finished":
             agent = self.agent(str(data.get("agent", "Agent")))
             code = data.get("exit_code", 0)
             if code:
                 agent.status = "Failed"
+                agent.activity = f"Process exited with code {code}"
                 line = f"{agent.name}: Codex exited with code {code}"
             else:
                 agent.status = "Reviewing response"
+                agent.activity = "Reading response"
                 line = f"{agent.name}: Codex process finished; reading response"
         elif event == "agent_error":
             agent = self.agent(str(data.get("agent", "Agent")))
             agent.status = "Failed"
+            agent.activity = "Agent failed"
             line = f"{agent.name} error (exit {data.get('exit_code', '?')}): {self._brief(data.get('text'))}"
         elif event == "agent_diagnostic":
             diagnostic = self._brief(data.get("text"), 240)
@@ -115,25 +128,38 @@ class WorkflowState:
             child.role = str(data.get("role") or child.role)
             child.status = "Delegated"
             child.task = self._brief(data.get("task"))
+            child.activity = "Waiting for its turn"
             parent.status = "Delegating"
+            parent.activity = f"Delegated work to {child.name}"
             line = f"{parent.name} → {child.name}: {child.task}"
         elif event == "agent_final_response":
             agent = self.agent(str(data["agent"]))
             if agent.status != "Failed":
                 agent.status = "Completed"
+                agent.activity = "Task completed"
             if agent.parent and agent.parent in self.agents:
                 self.agents[agent.parent].status = "Working"
+                self.agents[agent.parent].activity = f"Resumed after {agent.name} completed"
             line = f"{agent.name} completed"
         elif event == "run_completed":
             self.status = "Failed" if any(agent.status == "Failed" for agent in self.agents.values()) else "Completed"
             self.final_response = str(data.get("final_response") or "")
             line = "Workflow completed"
         elif event == "file_accessed":
-            line = f"{data.get('agent', 'Agent')} read: {self._names(data.get('paths', []))}"
+            name = str(data.get('agent', 'Agent'))
+            names = self._names(data.get('paths', []))
+            self.agent(name).activity = f"Reading {names}"
+            line = f"{name} read: {names}"
         elif event == "file_edited":
-            line = f"{data.get('agent', 'Agent')} edited: {self._names(data.get('path', ''))}"
+            name = str(data.get('agent', 'Agent'))
+            names = self._names(data.get('path', ''))
+            self.agent(name).activity = f"Editing {names}"
+            line = f"{name} edited: {names}"
         elif event == "command_run":
-            line = f"{data.get('agent', 'Agent')} $ {self._brief(data.get('command'))}"
+            name = str(data.get('agent', 'Agent'))
+            command = self._command_summary(data.get("command"))
+            self.agent(name).activity = f"Running {command}"
+            line = f"{name} $ {self._brief(data.get('command'))}"
         elif event == "agent_reasoning":
             line = f"{data.get('agent', 'Agent')} thinking: {self._brief(data.get('text'))}"
         elif event == "agent_response":
@@ -148,9 +174,30 @@ class WorkflowState:
             else:
                 self.outputs[name] = self.outputs.get(name, "") + text
         elif event == "tool_invoked":
-            tool = data.get("tool", "tool")
-            if tool not in {"read_file", "list_files", "search_code", "run_command", "write_file", "patch_file"}:
-                line = f"{data.get('agent', 'Agent')} started {tool}"
+            tool = str(data.get("tool") or "tool")
+            name = str(data.get("agent", "Agent"))
+            agent = self.agent(name)
+            if agent.status not in {"Failed", "Completed"}:
+                agent.status = "Using tool"
+            # Arguments may contain prompts, credentials, or file contents.
+            agent.activity = f"Using {tool}"
+            line = f"{name} started {tool}"
+        elif event == "tool_completed":
+            name = str(data.get("agent", "Agent"))
+            tool = str(data.get("tool") or "tool")
+            agent = self.agent(name)
+            if agent.status not in {"Failed", "Completed"}:
+                agent.status = "Working"
+                agent.activity = f"Finished {tool}; continuing task"
+            line = f"{name} finished {tool}"
         if line:
             self.lines.append(line)
         return line
+
+    @staticmethod
+    def _command_summary(value: Any) -> str:
+        """Return a command label without exposing its arguments."""
+        parts = str(value or "").strip().split()
+        if not parts:
+            return "command"
+        return Path(parts[0].replace("\\", "/")).name or "command"

@@ -244,6 +244,13 @@ class OrchestratorTUI(App[None]):
                 return
             attached.add(name)
             node = parent.add(self._agent_label(self.state.agents[name]), expand=True)
+            agent = self.state.agents[name]
+            task = WorkflowState._brief(agent.task, 100) or "Not assigned"
+            activity = WorkflowState._brief(agent.activity, 100) or "Waiting"
+            node.add_leaf(Text(f"Task: {task}"))
+            node.add_leaf(Text(f"Current: {activity}"))
+            if agent.role:
+                node.add_leaf(Text(f"Role: {WorkflowState._brief(agent.role, 80)}"))
             for child in self.state.agents.values():
                 if child.parent == name and child.name not in attached:
                     add(child.name, node)
@@ -292,6 +299,11 @@ class OrchestratorTUI(App[None]):
             self._record_debug(f"EVENT {event}: {json.dumps(debug_data, ensure_ascii=False, default=str)}")
             if event == "tui_error":
                 self.state.status = "Failed"
+                for agent in self.state.agents.values():
+                    if agent.status not in {"Completed", "Failed"}:
+                        agent.status = "Failed"
+                        agent.activity = "Workflow failed"
+                structural = True
                 self.state.lines.append(f"Workflow error: {data.get('text', '')}")
                 if data.get("traceback"):
                     self._record_debug("TRACEBACK:\n" + str(data["traceback"]))
@@ -306,7 +318,8 @@ class OrchestratorTUI(App[None]):
                     "agent_registered", "agent_created", "agent_turn_start",
                     "delegation_dispatched", "run_started", "agent_final_response",
                     "agent_process_started", "agent_process_finished", "agent_error",
-                    "agent_progress", "agent_protocol_error",
+                    "agent_progress", "agent_protocol_error", "tool_invoked",
+                    "tool_completed", "file_accessed", "file_edited", "command_run",
                 }
                 if event == "workflow_status":
                     self.state.status = str(data.get("status") or self.state.status)
